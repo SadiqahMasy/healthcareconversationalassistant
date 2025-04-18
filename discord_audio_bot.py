@@ -4,6 +4,8 @@ import asyncio
 import io
 import wave
 import numpy as np
+import torch
+import torchaudio
 import whisper
 import tempfile
 import os
@@ -15,8 +17,23 @@ import struct
 import datetime
 from dotenv import load_dotenv
 
+from csm.generator import Segment, load_csm_1b
+from csm.utils import prepare_prompt
+from llm_adapter import OllamaAdapter
+
 # Load environment variables from .env file
 load_dotenv()
+
+# Setup csm
+os.environ["NO_TORCH_COMPILE"] = "1"
+
+
+if torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+print(f"[Torch] Using device: {device}")
+
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -24,8 +41,22 @@ intents.message_content = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+
 # Initialize Whisper model
 whisper_model = whisper.load_model("base")
+
+# CSM
+generator = load_csm_1b(device)
+
+# LLM
+MODEL = "llama3.2:3b-instruct-q4_0"
+llm_adapter = OllamaAdapter()
+
+def generate_chat(messages: list[dict]):
+    return llm_adapter.chat(
+        messages,
+        model=MODEL
+    )['message']['content']
 
 # Initialize VAD
 vad = webrtcvad.Vad(3)  # Aggressiveness from 0 to 3 (3 is most aggressive)
@@ -45,21 +76,26 @@ recording_sessions = {}  # voice_client -> should_stop flag
 TRANSCRIPTION_FILE = "transcriptions.txt"
 AUDIO_OUTPUT_DIR = "recorded_audio"
 
+
+# Global conversation data
+conversation_archive: list [Segment] = []
+
+
 # Ensure audio directory exists
 os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
 
-def log_transcription(username, text, audio_file=None):
+def log_transcription(username, text, audio_file: bytes=None):
     """Log transcription to file with timestamp and audio filename if available"""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    log_entry = f"[{timestamp}] {username}: {text}"
-    if audio_file:
-        log_entry += f" [Audio: {os.path.basename(audio_file)}]"
-    log_entry += "\n"
+    print(f"[Log] Saved transcription from {username} to {text}")
+
+    return [prepare_prompt(
+        text,
+        username,
+        audio_file,
+        generator.sample_rate
+    )]
     
-    with open(TRANSCRIPTION_FILE, "a", encoding="utf-8") as f:
-        f.write(log_entry)
-    print(f"[Log] Saved transcription from {username} to {TRANSCRIPTION_FILE}")
 
 @bot.event
 async def on_ready():
@@ -221,6 +257,9 @@ async def process_with_vad(ctx, sink):
             return
             
         print(f"[Voice] Processing audio from {len(sink.audio_data)} users")
+        
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
             
         # Process each user's audio
         for user_id, audio_data in sink.audio_data.items():
@@ -302,6 +341,7 @@ async def process_with_vad(ctx, sink):
         is_speaking = False
 
 def process_audio_queue():
+    global conversation_archive
     """Process audio files in the queue with Whisper"""
     while True:
         try:
@@ -313,14 +353,15 @@ def process_audio_queue():
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             output_filename = os.path.join(AUDIO_OUTPUT_DIR, f"{timestamp}_{username.replace(' ', '_')}.wav")
             
-            # Save a copy of the audio file
+
+            # Read the audio file into a bytes buffer
             try:
                 with open(temp_filename, 'rb') as src_file:
-                    with open(output_filename, 'wb') as dest_file:
-                        dest_file.write(src_file.read())
-                print(f"[Whisper] Saved audio to {output_filename}")
+                    audio_bytes = src_file.read()
             except Exception as e:
                 print(f"[Whisper] Error saving audio file: {e}")
+                audio_bytes = None
+
             
             # Process with Whisper
             print("[Whisper] Running model...")
@@ -332,13 +373,65 @@ def process_audio_queue():
             
             if transcribed_text:
                 # Log the transcription to file with audio file reference
-                log_transcription(username, transcribed_text, output_filename)
+                if audio_bytes != None:
+                    conversation_archive += log_transcription(0, transcribed_text, audio_bytes)
+                else:
+                    print("[Whisper] failed to get audio file bytes")
                 
                 # Send the transcription to the Discord channel
-                print(f"[Whisper] Sending transcription to Discord for {username}")
-                asyncio.run_coroutine_threadsafe(
-                    ctx.send(f"{username} said: {transcribed_text}"), bot.loop
+                # print(f"[Whisper] Sending transcription to Discord for {username}")
+                # asyncio.run_coroutine_threadsafe(
+                #     ctx.send(f"{username} said: {transcribed_text}"), bot.loop
+                # )
+                response = generate_chat(
+                    [{"role": ("assistant" if c.speaker == 1 else "user"), "content": c.text} for c in conversation_archive]
                 )
+                print(f"[Ollama] {response}")
+
+                audio_tensor = generator.generate(
+                    text=response,
+                    speaker=0,
+                    context=conversation_archive,
+                    max_audio_length_ms=10_000
+                )
+
+                # Convert to byte stream instead of saving to file
+                buffer = io.BytesIO()
+                torchaudio.save(
+                    buffer,
+                    audio_tensor.cpu(),
+                    generator.sample_rate,
+                    format="wav"
+                )
+                buffer.seek(0)
+                audio_bytes = buffer.read()
+                print(f"[CSM] Successfully generated audio response ({len(audio_bytes)} bytes)")
+                
+                # Play the audio in the voice channel instead of sending as a file
+                if ctx.voice_client and ctx.voice_client.is_connected():
+                    # Save to a temporary file since FFmpegPCMAudio needs a file path
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                        temp_file.write(audio_bytes)
+                        temp_filename = temp_file.name
+                    
+                    # Make sure the bot isn't already playing audio
+                    if ctx.voice_client.is_playing():
+                        ctx.voice_client.stop()
+                    
+                    # Play the audio
+                    audio_source = discord.FFmpegPCMAudio(temp_filename)
+                    ctx.voice_client.play(audio_source, after=lambda e: os.remove(temp_filename) if e is None else print(f"[Voice] Error playing audio: {e}"))
+                    print(f"[Voice] Playing audio response in {ctx.voice_client.channel.name}")
+                else:
+                    # If not in a voice channel, send as a file instead
+                    audio_file = discord.File(io.BytesIO(audio_bytes), filename="response.wav")
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send("I'm not in a voice channel, here's the audio file:", file=audio_file), bot.loop
+                    )
+                
+                # save models
+                conversation_archive += log_transcription(1, transcribed_text, audio_bytes)
+
             else:
                 print("[Whisper] No text was transcribed")
                 
