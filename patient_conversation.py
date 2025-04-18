@@ -1,21 +1,22 @@
 import openai
-from slack_sdk.web import WebClient
+import discord
+from discord.ext import commands
 from typing import Dict, Optional
 
 class patientConversationAskQuestion:
 
-    def __init__(self, channel: str, question: str, openAI_client, slack_client: WebClient, context: Optional[Dict] = None) -> None:
+    def __init__(self, channel: str, question: str, openAI_client, discord_client: commands.Bot, context: Optional[Dict] = None) -> None:
         self.channel = channel
         self.question = question
         self.openAI_client = openAI_client
-        self.slack_client = slack_client
+        self.discord_client = discord_client
         self.context = context or {}
         self.question_answer = None
         self.message_history = []
         self.functions = [
             {
                 "name": "question_answered",
-                "description": "Call this function when the patient's question has been fully answered",
+                "description": f"Call this function when the patient's question has been fully answered, question is {self.question}",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -29,7 +30,7 @@ class patientConversationAskQuestion:
             }
         ]
 
-    def respond_to_message(self, new_message: str):
+    async def respond_to_message(self, new_message: str):
         # Add new message to history
         self.message_history.append({"role": "user", "content": new_message})
         
@@ -46,11 +47,12 @@ class patientConversationAskQuestion:
         response = self._call_chatgpt(messages)
         self.message_history.append({"role": "assistant", "content": response})
         
-        return self.send_message(self.channel, response)
+        if response != None:
+            return await self.send_message(self.channel, response)
 
     def _build_system_message(self) -> str:
         """Build the system message incorporating context"""
-        base_message = "You are a helpful healthcare assistant. Answer questions clearly and concisely. If you fully answer a question, call the question_answered function."
+        base_message =f"You are roleplaying as a helpful healthcare assistant. Answer questions clearly and concisely. If patients fully answer the question ({self.question}), call the question_answered function to let the doctor know. After calling question_answered respond to the patient."
         
         if not self.context:
             return base_message
@@ -96,7 +98,7 @@ class patientConversationAskQuestion:
         return base_message
 
     def _call_chatgpt(self, messages):
-        response = self.openAI_client.ChatCompletion.create(
+        response = self.openAI_client.chat.completions.create(
             model="gpt-4",
             messages=messages,
             functions=self.functions,
@@ -105,14 +107,14 @@ class patientConversationAskQuestion:
         
         response_message = response.choices[0].message
         
-        if response_message.get("function_call"):
-            function_name = response_message["function_call"]["name"]
+        if response_message.function_call:
+            function_name = response_message.function_call.name
             if function_name == "question_answered":
                 import json
-                function_args = json.loads(response_message["function_call"]["arguments"])
+                function_args = json.loads(response_message.function_call.arguments)
                 self.question_answered(function_args["summary"])
         
-        return response_message["content"]
+        return response_message.content
 
     def question_answered(self, question_answer: str):
         self.question_answer = question_answer
@@ -120,23 +122,16 @@ class patientConversationAskQuestion:
     def check_if_answered(self):
         return not (self.question_answer == None)
 
-    def send_message(self, channel: str, msg: str):
-        """Send a message to a specific channel using Slack WebClient"""
+    async def send_message(self, channel: str, msg: str):
+        """Send a message to a specific channel using Discord"""
         try:
-            response = self.slack_client.chat_postMessage(
-                channel=channel,
-                text=msg,
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": msg
-                        }
-                    }
-                ]
-            )
-            return response
+            # Find channel by name
+            channel_obj = discord.utils.get(self.discord_client.get_all_channels(), name=channel)
+            if channel_obj:
+                await channel_obj.send(msg)
+                return True
+            print(f"Warning: Could not find channel '{channel}'")
+            return False
         except Exception as e:
             print(f"Error sending message to {channel}: {str(e)}")
             return None
