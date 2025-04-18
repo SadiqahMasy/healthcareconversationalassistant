@@ -1,0 +1,88 @@
+"patient_context": [
+  {
+    "patient_info": {
+      "name": "John Doe",
+      "age": 45,
+      "gender": "male"
+    },
+    "medical_history": [
+      "Hypertension",
+      "Diabetes",
+      "Previous knee surgery"
+    ],
+    "medications": [
+      {
+        "medication": "Lisinopril",
+        "amount": "10mg daily",
+        "StartDate": "2025-03-01",
+        "side_effects": [
+          "cough",
+          "dizziness",
+          "headache",
+          "fatigue",
+          "hypotension (low blood pressure)",
+          "hyperkalemia (high potassium)",
+          "renal impairment",
+          "rash",
+          "angioedema (swelling of face, lips, or tongue)"
+        ]
+      }
+    ],
+    "additional_context": "Patient is currently experiencing mild chest discomfort"
+  },
+  {
+    "patient_info": {
+      "name": "Mary Smith",
+      "age": 30,
+      "gender": "female"
+    },
+    "medical_history": [
+      "Polycystic ovary syndrome",
+      "Obesity",
+      "Vitamin D deficiency"
+    ],
+    "medications": [
+      {
+        "medication": "Metformin",
+        "amount": "500mg twice daily",
+        "StartDate": "2024-11-15",
+        "side_effects": [
+          "gastrointestinal upset (nausea, diarrhea, abdominal pain)",
+          "vitamin B12 deficiency",
+          "lactic acidosis (rare)",
+          "flatulence",
+          "metallic taste"
+        ]
+      }
+    ],
+    "additional_context": "Patient reports mild stomach cramps after meals"
+  },
+  {
+    "patient_info": {
+      "name": "Robert Lee",
+      "age": 68,
+      "gender": "male"
+    },
+    "medical_history": [
+      "Atrial fibrillation",
+      "Hyperlipidemia",
+      "Chronic kidney disease (stage 3)"
+    ],
+    "medications": [
+      {
+        "medication": "Warfarin",
+        "amount": "5mg nightly",
+        "StartDate": "2025-02-20",
+        "side_effects": [
+          "bleeding or bruising easily",
+          "hemorrhage (GI bleeding, intracranial bleeding)",
+          "alopecia",
+          "dermatitis",
+          "nausea",
+          "phlebitis at injection site (if switching from IV)"
+        ]
+      }
+    ],
+    "additional_context": "INR monitoring scheduled biweekly"
+  }
+]
